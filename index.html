@@ -20,17 +20,36 @@ function catchup(){let a=stories.slice(0,5);document.getElementById("brief").tex
 function age(d){let m=Math.max(1,Math.floor((Date.now()-d)/60000));return m<60?m+"m ago":Math.floor(m/60)+"h ago"}
 function classify(t){t=t.toLowerCase();if(t.includes("jet"))return"JETS";if(t.includes("knick"))return"KNICKS";if(t.includes("fantasy"))return"FANTASY";if(/nba|basketball|lakers|celtics|spurs|warriors|clippers/.test(t))return"NBA";return"NFL"}
 async function loadLive(){
- const queries=["New York Jets NFL","New York Knicks NBA","NFL breaking news","NBA breaking news","fantasy football news","Adam Schefter NFL","Ian Rapoport NFL","Ian Begley Knicks","Zack Rosenblatt Jets","Rich Cimini Jets","Fred Katz Knicks","Jake Fischer NBA","Marc Stein NBA","Chris Haynes NBA","Daniel Jeremiah NFL","Dane Brugler NFL"];
- const proxy="https://api.allorigins.win/raw?url=";let out=[];
- for(const q of queries){
-  try{const rss="https://news.google.com/rss/search?q="+encodeURIComponent(q+" when:1d")+"&hl=en-US&gl=US&ceid=US:en";const xml=await fetch(proxy+encodeURIComponent(rss)).then(r=>{if(!r.ok)throw Error();return r.text()});
-  const d=new DOMParser().parseFromString(xml,"text/xml");[...d.querySelectorAll("item")].slice(0,4).forEach(n=>{let title=n.querySelector("title")?.textContent||"";let link=n.querySelector("link")?.textContent||"#";let source=n.querySelector("source")?.textContent||"Public reporting";let dt=new Date(n.querySelector("pubDate")?.textContent||Date.now());let raw=title.toLowerCase();out.push({id:"l"+Math.abs([...title].reduce((a,c)=>((a<<5)-a)+c.charCodeAt(0)|0,0)),source,time:age(dt),cat:classify(title+" "+q),breaking:/breaking|trade|signs|signed|injur|ruled out|released|waived|suspend/i.test(raw),title,body:"Current public reporting matched to your WIRE watchlist.",link,date:dt})})}catch(e){}
+ try{
+  const response=await fetch("./feed.json?ts="+Date.now(),{cache:"no-store"});
+  if(!response.ok)throw new Error("Feed unavailable");
+
+  const data=await response.json();
+
+  stories=(data.stories||[]).map(s=>{
+   const dt=new Date(s.published);
+   return{
+    ...s,
+    time:age(dt),
+    date:dt
+   };
+  }).sort((a,b)=>b.date-a.date);
+
+  if(stories.length){
+   document.getElementById("status").textContent="● LIVE";
+   document.getElementById("brief").textContent="WIRE is live. Tap Catch Me Up for the five newest stories.";
+  }else{
+   throw new Error("No stories");
+  }
+ }catch(e){
+  stories=[];
+  document.getElementById("status").textContent="● RETRY";
+  document.getElementById("brief").textContent="WIRE could not load the latest feed. Reopen WIRE to retry.";
  }
- let seen=new Set();stories=out.filter(x=>x.title&&!seen.has(x.title.toLowerCase())&&seen.add(x.title.toLowerCase())).sort((a,b)=>b.date-a.date).slice(0,50);
- if(stories.length){document.getElementById("status").textContent="● LIVE";document.getElementById("brief").textContent="Live public reporting is loaded. Tap Catch Me Up for the five newest stories."}
- else{document.getElementById("status").textContent="● RETRY";document.getElementById("brief").textContent="The live feed could not load on this refresh. Reopen WIRE to retry; no demo stories are being shown as live."}
+
  render();
 }
+ 
 document.querySelectorAll(".navbtn").forEach(b=>b.onclick=()=>{document.querySelectorAll(".navbtn").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.querySelectorAll(".screen").forEach(x=>x.classList.remove("active"));document.getElementById(b.dataset.screen).classList.add("active")});
 document.getElementById("sourceList").innerHTML=sources.map(s=>`<div class="source"><div><b>${esc(s.name)}</b><br><small>@${esc(s.handle)}</small></div><div class="toggle" onclick="this.classList.toggle('off')"></div></div>`).join("");
 loadLive();
