@@ -1,0 +1,274 @@
+name: Update WIRE Feed
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wire-feed
+  cancel-in-progress: true
+
+jobs:
+  update-feed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out WIRE
+        uses: actions/checkout@v4
+
+      - name: Build live feed
+        shell: python
+        run: |
+          import urllib.request
+          import urllib.parse
+          import xml.etree.ElementTree as ET
+          import json
+          import re
+          import hashlib
+          import email.utils
+          from datetime import datetime, timezone
+
+          queries = [
+              "New York Jets NFL",
+              "New York Knicks NBA",
+              "NFL breaking news",
+              "NBA breaking news",
+              "fantasy football news",
+              "Adam Schefter NFL",
+              "Ian Rapoport NFL",
+              "Ian Begley Knicks",
+              "Zack Rosenblatt Jets",
+              "Rich Cimini Jets",
+              "Brian Costello Jets",
+              "Fred Katz Knicks",
+              "Jonathan Macri Knicks",
+              "Tommy Beer Knicks",
+              "Jake Fischer NBA",
+              "Marc Stein NBA",
+              "Chris Haynes NBA",
+              "Jonathan Givony NBA",
+              "Bobby Marks NBA",
+              "Mike Garafolo NFL",
+              "Jeremy Fowler NFL",
+              "Field Yates NFL",
+              "Jordan Schultz NFL",
+              "Daniel Jeremiah NFL",
+              "Dane Brugler NFL",
+              "Benjamin Solak NFL"
+          ]
+
+          feeds = [
+              ("https://www.espn.com/espn/rss/nfl/news", "NFL"),
+              ("https://www.espn.com/espn/rss/nba/news", "NBA")
+          ]
+
+          def fetch(url):
+              request = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "Mozilla/5.0 WIRE-Sports/1.0"}
+              )
+              with urllib.request.urlopen(request, timeout=15) as response:
+                  return response.read()
+
+          def classify(text):
+              text = text.lower()
+
+              if "jet" in text:
+                  return "JETS"
+
+              if "knick" in text:
+                  return "KNICKS"
+
+              if "fantasy" in text:
+                  return "FANTASY"
+
+              if re.search(
+                  r"nba|basketball|lakers|celtics|spurs|warriors|"
+                  r"clippers|76ers|sixers|nets|heat|bucks|cavaliers|"
+                  r"thunder|nuggets|timberwolves",
+                  text
+              ):
+                  return "NBA"
+
+              return "NFL"
+
+          def parse_date(value):
+              try:
+                  date = email.utils.parsedate_to_datetime(value)
+
+                  if date.tzinfo is None:
+                      date = date.replace(tzinfo=timezone.utc)
+
+                  return date.astimezone(timezone.utc)
+
+              except Exception:
+                  return datetime.now(timezone.utc)
+
+          stories = []
+
+          def parse_feed(url, label):
+              try:
+                  root = ET.fromstring(fetch(url))
+
+              except Exception as error:
+                  print("Feed failed:", label, error)
+                  return
+
+              for item in root.findall(".//item")[:15]:
+
+                  def text(tag):
+                      node = item.find(tag)
+
+                      if node is None:
+                          return ""
+
+                      return (node.text or "").strip()
+
+                  title = text("title")
+                  link = text("link")
+                  published = text("pubDate")
+
+                  source_node = item.find("source")
+
+                  if source_node is not None:
+                      source = (source_node.text or "").strip()
+                  else:
+                      source = ""
+
+                  if not title or not link:
+                      continue
+
+                  if not source:
+
+                      if "espn.com" in url:
+                          source = "ESPN"
+
+                      elif " - " in title:
+                          source = title.rsplit(" - ", 1)[-1].strip()
+
+                      else:
+                          source = "Public reporting"
+
+                  suffix = " - " + source
+
+                  if title.endswith(suffix):
+                      title = title[:-len(suffix)].strip()
+
+                  date = parse_date(published)
+
+                  context = title + " " + label
+
+                  breaking = bool(
+                      re.search(
+                          r"breaking|trade|signs|signed|injur|"
+                          r"ruled out|released|waived|suspend",
+                          context,
+                          re.I
+                      )
+                  )
+
+                  stories.append({
+                      "id": "w" + hashlib.sha256(
+                          (title + link).encode()
+                      ).hexdigest()[:14],
+
+                      "source": source,
+                      "cat": classify(context),
+                      "breaking": breaking,
+                      "title": title,
+
+                      "body":
+                          "Current public reporting matched "
+                          "to your WIRE watchlist.",
+
+                      "link": link,
+
+                      "published":
+                          date.isoformat().replace("+00:00", "Z")
+                  })
+
+          for url, label in feeds:
+              parse_feed(url, label)
+
+          for query in queries:
+
+              params = urllib.parse.urlencode({
+                  "q": query + " when:1d",
+                  "hl": "en-US",
+                  "gl": "US",
+                  "ceid": "US:en"
+              })
+
+              url = (
+                  "https://news.google.com/rss/search?"
+                  + params
+              )
+
+              parse_feed(url, query)
+
+          seen = set()
+          unique = []
+
+          stories.sort(
+              key=lambda story: story["published"],
+              reverse=True
+          )
+
+          for story in stories:
+
+              key = re.sub(
+                  r"[^a-z0-9]+",
+                  " ",
+                  story["title"].lower()
+              ).strip()
+
+              if key and key not in seen:
+                  seen.add(key)
+                  unique.append(story)
+
+          payload = {
+              "updated":
+                  datetime.now(timezone.utc)
+                  .isoformat()
+                  .replace("+00:00", "Z"),
+
+              "stories": unique[:100]
+          }
+
+          with open(
+              "feed.json",
+              "w",
+              encoding="utf-8"
+          ) as file:
+
+              json.dump(
+                  payload,
+                  file,
+                  ensure_ascii=False,
+                  separators=(",", ":")
+              )
+
+          print(
+              "WIRE stories:",
+              len(payload["stories"])
+          )
+
+      - name: Publish updated feed
+        run: |
+          git config user.name "WIRE Feed Bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add feed.json
+
+          if git diff --cached --quiet; then
+            echo "No feed changes."
+            exit 0
+          fi
+
+          git commit -m "Update WIRE live feed"
+          git push
